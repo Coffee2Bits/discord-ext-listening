@@ -9,7 +9,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional, Union
 from discord.errors import ClientException
 from discord.member import Member
 from discord.object import Object
-from discord.voice_client import VoiceClient as BaseVoiceClient
+from discord.voice_client import VoiceClient as BaseVoiceClient, VoiceConnectionState
 from discord.gateway import DiscordVoiceWebSocket
 
 from . import opus
@@ -49,7 +49,7 @@ class AsyncEventWrapper:
         await future
 
 
-class AudioReceiver(threading.Thread):
+class AudioReceiver:
     def __init__(
         self,
         client: 'VoiceClient',
@@ -70,25 +70,22 @@ class AudioReceiver(threading.Thread):
         self._resumed: AsyncEventWrapper = AsyncEventWrapper()
         self._clean: AsyncEventWrapper = AsyncEventWrapper()
         self._clean.set()
-        self._connected: threading.Event = client._connected
 
-    def _do_run(self) -> None:
-        while not self._end.is_set():
-            if not self._connected.is_set():
-                self._connected.wait()
+    def on_socket_read(self, data : [bytes]):
+        if data is None:
+            return
 
-            data = self.client.recv_audio(dump=not self._resumed.is_set())
-            if data is None:
-                continue
+        if not self.process_pool:
+            return
 
-            future = self.process_pool.submit(  # type: ignore
-                data,
-                self.client.guild.id % self.process_pool.max_processes,  # type: ignore
-                self.decode,
-                self.client.mode,
-                self.client.secret_key,
-            )
-            future.add_done_callback(self._audio_processing_callback)
+        future = self.process_pool.submit(  # type: ignore
+            data,
+            self.client.guild.id % self.process_pool.max_processes,  # type: ignore
+            self.decode,
+            self.client.mode,
+            self.client.secret_key,
+        )
+        future.add_done_callback(self._audio_processing_callback)
 
     def _audio_processing_callback(self, future: Future) -> None:
         try:
@@ -105,13 +102,6 @@ class AudioReceiver(threading.Thread):
             sink_callback = self.sink.on_rtcp
             packet.pt = RTCPMessageType(packet.pt)
         sink_callback(packet)  # type: ignore
-
-    def run(self) -> None:
-        try:
-            self._do_run()
-        except Exception as exc:
-            self.stop()
-            _log.exception("Exception occurred in voice receiver", exc_info=exc)
 
     def _call_after(self) -> None:
         if self.after is not None:
@@ -187,18 +177,24 @@ class AudioReceiver(threading.Thread):
         await self._clean.async_wait(self.loop if loop is None else loop)
 
 
+
+
 class VoiceClient(BaseVoiceClient):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
         self._receiver: Optional[AudioReceiver] = None
         self._ssrc_map: Dict[int, Dict[str, Union[Member, Object]]] = {}
+    
+        super().__init__(*args, **kwargs)
+
+    def create_connection_state(self) -> VoiceConnectionState:
+        from .gateway import hook
+        self._receiver = AudioReceiver(self)
+        vcs = VoiceConnectionState(voice_client=self, hook=hook)
+        vcs.add_socket_listener(self._receiver.on_socket_read)
+        return vcs
 
     async def on_voice_server_update(self, data) -> None:
         await super().on_voice_server_update(data)
-
-        self._receiver = AudioReceiver(self)
-        self._receiver.start()
 
     async def disconnect(self, *, force=False):
         if not force and not self.is_connected():
@@ -207,16 +203,6 @@ class VoiceClient(BaseVoiceClient):
         if self._receiver is not None:
             self._receiver.stop()
         await super().disconnect(force=force)
-
-    async def connect_websocket(self) -> DiscordVoiceWebSocket:
-        from .gateway import hook
-
-        ws = await DiscordVoiceWebSocket.from_client(self, hook=hook)
-        self._connected.clear()
-        while ws.secret_key is None:
-            await ws.poll_event()
-        self._connected.set()
-        return ws
 
     def update_ssrc(self, data):
         ssrc = data["ssrc"]
@@ -356,32 +342,3 @@ class VoiceClient(BaseVoiceClient):
             return
         await self._receiver.wait_for_standby()
         await self._receiver.wait_for_clean()
-
-    def recv_audio(self, *, dump: bool = False) -> Optional[bytes]:
-        """Attempts to receive raw audio and returns it, otherwise nothing.
-
-        You must be connected to receive audio.
-
-        Logs any error thrown by the connection socket.
-
-        Parameters
-        ----------
-        dump: :class:`bool`
-            Will not return data if true
-
-        Returns
-        -------
-        Optional[bytes]
-            If audio was received then it's returned.
-        """
-        ready, _, err = select.select([self.socket], [], [self.socket], 0.01)
-        if err:
-            _log.error(f"Socket error: {err[0]}")
-            return
-        if not ready or not self.is_connected():
-            return
-
-        data = self.socket.recv(4096)
-        if dump:
-            return
-        return data
