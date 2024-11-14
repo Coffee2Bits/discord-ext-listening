@@ -9,9 +9,7 @@ from typing import Dict, List, Optional, Tuple, Union, Any, TYPE_CHECKING
 from .opus import Decoder
 from .sink import SILENT_FRAME, AudioFrame, RawAudioData, RTCPPacket, get_audio_packet
 
-
-if TYPE_CHECKING:
-    from multiprocessing.connection import Connection
+from multiprocessing.connection import Connection
 
 
 __all__ = ("AudioProcessPool",)
