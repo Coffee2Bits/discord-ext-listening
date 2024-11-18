@@ -25,8 +25,12 @@ class AudioUnpacker(_mp_ctx.Process):
         self.patience = patience
         self.secret_key: Optional[List[int]] = None
         self.decoders: Dict[int, Decoder] = {}
+        self.enable_debugging = enable_debugging
 
-        if (enable_debugging):
+    def run(self) -> None:
+        print(f"Run method running in new process: {self.pipe} {self.patience} {self.enable_debugging} (PID: {os.getpid()})")
+
+        if (self.enable_debugging):
             if os.getenv("ENV") == "development":
                 try:
                     import debugpy
@@ -35,10 +39,10 @@ class AudioUnpacker(_mp_ctx.Process):
                 except ImportError:
                     print("Debugpy is not installed.")
 
-    def run(self) -> None:
         while True:
             try:
                 if not self.pipe.poll(self.patience):
+                    print(f"Closing Pipe")
                     self.pipe.close()
                     return
 
