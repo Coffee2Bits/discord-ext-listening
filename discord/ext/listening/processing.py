@@ -19,7 +19,7 @@ __all__ = ("AudioProcessPool",)
 _mp_ctx: multiprocessing.context.SpawnContext = multiprocessing.get_context("spawn")
 
 class AudioUnpacker(_mp_ctx.Process):
-    def __init__(self, enable_debugging:bool, pipe: Connection, patience : Optional[float], **kwargs):
+    def __init__(self, pipe: Connection, patience : Optional[float], **kwargs):
         super().__init__(daemon=True, **kwargs)
         self.pipe = pipe
         self.patience = patience
@@ -28,16 +28,7 @@ class AudioUnpacker(_mp_ctx.Process):
         self.enable_debugging = enable_debugging
 
     def run(self) -> None:
-        print(f"Run method running in new process: {self.pipe} {self.patience} {self.enable_debugging} (PID: {os.getpid()})")
-
-        if (self.enable_debugging):
-            if os.getenv("ENV") == "development":
-                try:
-                    import debugpy
-                    debugpy.listen(("localhost", 5678))
-                    print("Debugpy is listening...")
-                except ImportError:
-                    print("Debugpy is not installed.")
+        print(f"Run method running in new process: {self.pipe} {self.patience} (PID: {os.getpid()})")
 
         while True:
             try:
@@ -57,9 +48,11 @@ class AudioUnpacker(_mp_ctx.Process):
 
                 self.pipe.send(packet)
             except EOFError:
+                print(f"Pipe Closed - Terminating Process")
                 # the pipe was closed for whatever reason so just terminate
                 return
             except BaseException as exc:
+                print(f"Processing Audio Exception: {exc}")
                 self.pipe.send(exc)
                 return
 
@@ -201,7 +194,13 @@ class AudioProcessPool:
                 self._spawn_process(n_p)
 
             future = Future()
-            self._processes[n_p].send(data=(data, decode, mode, secret_key))
+            
+            try:
+                self._processes[n_p].send(data=(data, decode, mode, secret_key))
+            except Exception as e:
+                future.set_exception(e)
+                return future
+            
             # notify _recv_loop that it should expect to receive audio from this process
             self._wait_queue.put((n_p, future))
             self._start_recv_loop()
@@ -218,18 +217,9 @@ class AudioProcessPool:
             self._processes = {}
 
     def _spawn_process(self, n_p) -> None:
-        enable_debugging : bool = False
-        if os.getenv("ENV") == "development":
-            try:
-                import debugpy
-                enable_debugging = debugpy.is_client_connected()
-            except ImportError:
-                pass
-
-
         # the function calling this one must have acquired self._lock
         submit_conn, recv_conn = _mp_ctx.Pipe(duplex=True)
-        process = AudioUnpacker(enable_debugging=enable_debugging, pipe=recv_conn, patience=self.process_patience)
+        process = AudioUnpacker(pipe=recv_conn, patience=self.process_patience)
         process.start()
         self._processes[n_p] = (submit_conn, process)
 
