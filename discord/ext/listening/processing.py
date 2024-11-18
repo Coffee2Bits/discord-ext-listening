@@ -220,7 +220,7 @@ class AudioProcessPool:
         submit_conn, recv_conn = _mp_ctx.Pipe(duplex=True)
         process = AudioUnpacker(pipe=recv_conn, patience=self.process_patience)
         process.start()
-        self._processes[n_p] = (submit_conn, process)
+        self._processes[n_p] = ProcessConnection(submit_conn, process)
 
     def _start_recv_loop(self) -> None:
         # check if _recv_loop is running; if not, start running it in a new thread
