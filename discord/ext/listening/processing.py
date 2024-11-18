@@ -25,7 +25,6 @@ class AudioUnpacker(_mp_ctx.Process):
         self.patience = patience
         self.secret_key: Optional[List[int]] = None
         self.decoders: Dict[int, Decoder] = {}
-        self.enable_debugging = enable_debugging
 
     def run(self) -> None:
         print(f"Run method running in new process: {self.pipe} {self.patience} (PID: {os.getpid()})")
