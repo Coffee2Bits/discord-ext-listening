@@ -10,6 +10,8 @@ from .opus import Decoder
 from .sink import SILENT_FRAME, AudioFrame, RawAudioData, RTCPPacket, get_audio_packet
 
 from multiprocessing.connection import Connection
+import os
+
 
 
 __all__ = ("AudioProcessPool",)
@@ -17,12 +19,21 @@ __all__ = ("AudioProcessPool",)
 _mp_ctx: multiprocessing.context.SpawnContext = multiprocessing.get_context("spawn")
 
 class AudioUnpacker(_mp_ctx.Process):
-    def __init__(self, pipe: Connection, patience : Optional[float], **kwargs):
+    def __init__(self, enable_debugging:bool, pipe: Connection, patience : Optional[float], **kwargs):
         super().__init__(daemon=True, **kwargs)
         self.pipe = pipe
         self.patience = patience
         self.secret_key: Optional[List[int]] = None
         self.decoders: Dict[int, Decoder] = {}
+
+        if (enable_debugging):
+            if os.getenv("ENV") == "development":
+                try:
+                    import debugpy
+                    debugpy.listen(("localhost", 5678))
+                    print("Debugpy is listening...")
+                except ImportError:
+                    print("Debugpy is not installed.")
 
     def run(self) -> None:
         while True:
@@ -203,9 +214,18 @@ class AudioProcessPool:
             self._processes = {}
 
     def _spawn_process(self, n_p) -> None:
+        enable_debugging : bool = False
+        if os.getenv("ENV") == "development":
+            try:
+                import debugpy
+                enable_debugging = debugpy.is_client_connected()
+            except ImportError:
+                pass
+
+
         # the function calling this one must have acquired self._lock
         submit_conn, recv_conn = _mp_ctx.Pipe(duplex=True)
-        process = AudioUnpacker(pipe=recv_conn, patience=self.process_patience)
+        process = AudioUnpacker(enable_debugging=enable_debugging, pipe=recv_conn, patience=self.process_patience)
         process.start()
         self._processes[n_p] = (submit_conn, process)
 
