@@ -220,25 +220,26 @@ class AudioProcessPool:
             threading.Thread(target=self._recv_loop).start()
 
     def _recv_loop(self) -> None:
-        self._wait_loop_running.set()
-        while True:
-            try:
-                n_p, future = self._wait_queue.get(timeout=self.wait_timeout)
-            except queue.Empty:
-                break
+        try:
+            self._wait_loop_running.set()
+            while True:
+                try:
+                    n_p, future = self._wait_queue.get(timeout=self.wait_timeout)
+                except queue.Empty:
+                    break
 
-            try:
-                ret = self._processes[n_p].recv()
-            except EOFError as ex:
-                ret = ex
-                # process probably terminated, but call to terminate is made just in case
-                with self._lock:
-                    self._processes[n_p].terminate()
-                    self._processes.pop(n_p)
+                try:
+                    ret = self._processes[n_p].recv()
+                except EOFError as ex:
+                    ret = ex
+                    # process probably terminated, but call to terminate is made just in case
+                    with self._lock:
+                        self._processes[n_p].terminate()
+                        self._processes.pop(n_p)
 
-            if isinstance(ret, BaseException):
-                future.set_exception(ret)
-            else:
-                future.set_result(ret)
-
-        self._wait_loop_running.clear()
+                if isinstance(ret, BaseException):
+                    future.set_exception(ret)
+                else:
+                    future.set_result(ret)
+        finally:
+            self._wait_loop_running.clear()
