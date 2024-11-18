@@ -17,22 +17,21 @@ __all__ = ("AudioProcessPool",)
 _mp_ctx: multiprocessing.context.SpawnContext = multiprocessing.get_context("spawn")
 
 class AudioUnpacker(_mp_ctx.Process):
-    def __init__(self, **kwargs):
+    def __init__(self, pipe: Connection, patience : Optional[float], **kwargs):
         super().__init__(daemon=True, **kwargs)
-
+        self.pipe = pipe
+        self.patience = patience
         self.secret_key: Optional[List[int]] = None
         self.decoders: Dict[int, Decoder] = {}
 
     def run(self) -> None:
-        pipe = self._args[0]  # type: ignore
-        patience = self._args[1]
         while True:
             try:
-                if not pipe.poll(patience):
-                    pipe.close()
+                if not self.pipe.poll(self.patience):
+                    self.pipe.close()
                     return
 
-                data, decode, mode, secret_key = pipe.recv()
+                data, decode, mode, secret_key = self.pipe.recv()
                 if secret_key is not None:
                     self.secret_key = secret_key
 
@@ -41,12 +40,12 @@ class AudioUnpacker(_mp_ctx.Process):
                     # enum not picklable
                     packet.pt = packet.pt.value  # type: ignore
 
-                pipe.send(packet)
+                self.pipe.send(packet)
             except EOFError:
                 # the pipe was closed for whatever reason so just terminate
                 return
             except BaseException as exc:
-                pipe.send(exc)
+                self.pipe.send(exc)
                 return
 
     def _decrypt_xsalsa20_poly1305(self, header, data) -> bytes:
@@ -206,7 +205,7 @@ class AudioProcessPool:
     def _spawn_process(self, n_p) -> None:
         # the function calling this one must have acquired self._lock
         submit_conn, recv_conn = _mp_ctx.Pipe(duplex=True)
-        process = AudioUnpacker(args=(recv_conn, self.process_patience))
+        process = AudioUnpacker(pipe=recv_conn, patience=self.process_patience)
         process.start()
         self._processes[n_p] = (submit_conn, process)
 
