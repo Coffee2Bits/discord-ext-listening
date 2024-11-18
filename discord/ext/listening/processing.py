@@ -183,32 +183,29 @@ class AudioProcessPool:
         :class:`Future`
             A future that resolves when the process returns the processed audio frame or an error
         """
-        self._lock.acquire()
+        with self._lock:
+            if n_p >= self.max_processes:
+                raise ValueError(f"n_p must be less than the maximum processes ({self.max_processes})")
 
-        if n_p >= self.max_processes:
-            raise ValueError(f"n_p must be less than the maximum processes ({self.max_processes})")
+            if n_p not in self._processes:
+                self._spawn_process(n_p)
 
-        if n_p not in self._processes:
-            self._spawn_process(n_p)
-
-        future = Future()
-        self._processes[n_p].send(future=future, data=(data, decode, mode, secret_key))
-        # notify _recv_loop that it should expect to receive audio from this process
-        self._wait_queue.put((n_p, future))
-        self._start_recv_loop()
-
-        self._lock.release()
+            future = Future()
+            self._processes[n_p].send(future=future, data=(data, decode, mode, secret_key))
+            # notify _recv_loop that it should expect to receive audio from this process
+            self._wait_queue.put((n_p, future))
+            self._start_recv_loop()
+        
         return future
 
     def cleanup_processes(self):
         """Close all :class:`Connection` pipes and terminate all processes."""
-        self._lock.acquire()
-        for process in self._processes.values():
-            # close pipe and terminate process
-            process.close()
-            process.terminate()
-        self._processes = {}
-        self._lock.release()
+        with self._lock:
+            for process in self._processes.values():
+                # close pipe and terminate process
+                process.close()
+                process.terminate()
+            self._processes = {}
 
     def _spawn_process(self, n_p) -> None:
         # the function calling this one must have acquired self._lock
@@ -235,10 +232,9 @@ class AudioProcessPool:
             except EOFError as ex:
                 ret = ex
                 # process probably terminated, but call to terminate is made just in case
-                self._lock.acquire()
-                self._processes[n_p].terminate()
-                self._processes.pop(n_p)
-                self._lock.release()
+                with self._lock:
+                    self._processes[n_p].terminate()
+                    self._processes.pop(n_p)
 
             if isinstance(ret, BaseException):
                 future.set_exception(ret)
