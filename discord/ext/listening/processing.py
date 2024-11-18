@@ -14,9 +14,7 @@ from multiprocessing.connection import Connection
 
 __all__ = ("AudioProcessPool",)
 
-
 _mp_ctx: multiprocessing.context.SpawnContext = multiprocessing.get_context("spawn")
-
 
 class AudioUnpacker(_mp_ctx.Process):
     def __init__(self, **kwargs):
@@ -102,10 +100,8 @@ class ProcessConnection:
     def __init__(self, conn: Connection, process: AudioUnpacker):
         self.conn = conn
         self.process = process
-        self.pending_future: Future | None = None
 
-    def send(self, *, future, data):
-        self.pending_future = future
+    def send(self, *, data):
         self.conn.send(data)
 
     def recv(self) -> Any:
@@ -191,7 +187,7 @@ class AudioProcessPool:
                 self._spawn_process(n_p)
 
             future = Future()
-            self._processes[n_p].send(future=future, data=(data, decode, mode, secret_key))
+            self._processes[n_p].send(data=(data, decode, mode, secret_key))
             # notify _recv_loop that it should expect to receive audio from this process
             self._wait_queue.put((n_p, future))
             self._start_recv_loop()
@@ -209,10 +205,10 @@ class AudioProcessPool:
 
     def _spawn_process(self, n_p) -> None:
         # the function calling this one must have acquired self._lock
-        conn1, conn2 = _mp_ctx.Pipe(duplex=True)
-        process = AudioUnpacker(args=(conn2, self.process_patience))
+        submit_conn, recv_conn = _mp_ctx.Pipe(duplex=True)
+        process = AudioUnpacker(args=(recv_conn, self.process_patience))
         process.start()
-        self._processes[n_p] = (conn1, process)
+        self._processes[n_p] = (submit_conn, process)
 
     def _start_recv_loop(self) -> None:
         # check if _recv_loop is running; if not, start running it in a new thread
@@ -222,6 +218,7 @@ class AudioProcessPool:
     def _recv_loop(self) -> None:
         try:
             self._wait_loop_running.set()
+
             while True:
                 try:
                     n_p, future = self._wait_queue.get(timeout=self.wait_timeout)
