@@ -80,6 +80,38 @@ class AudioUnpacker(_mp_ctx.Process):
 
         return self.strip_header_ext(box.decrypt(bytes(data), bytes(nonce)))
 
+    def _decrypt_rtp_aead_xchacha20_poly1305_rtpsize(self, packet: RTPPacket) -> bytes:
+        box = nacl.secret.SecretBox(bytes(self.secret_key))  # type: ignore
+        packet.adjust_rtpsize()
+
+        nonce = bytearray(24)
+        nonce[:4] = packet.nonce
+        voice_data = packet.data
+
+        # Blob vomit
+        assert isinstance(box, nacl.secret.Aead)
+        result = box.decrypt(bytes(voice_data), bytes(packet.header), bytes(nonce))
+
+
+        if packet.extended:
+            offset = packet.update_ext_headers(result)
+            result = result[offset:]
+
+        return result
+
+    def _decrypt_rtcp_aead_xchacha20_poly1305_rtpsize(self, data: bytes) -> bytes:
+        box = nacl.secret.SecretBox(bytes(self.secret_key))  # type: ignore
+    
+        nonce = bytearray(24)
+        nonce[:4] = data[-4:]
+        header = data[:8]
+
+        assert isinstance(box, nacl.secret.Aead)
+
+        result = box.decrypt(data[8:-4], bytes(header), bytes(nonce))
+
+        return header + result
+
     @staticmethod
     def strip_header_ext(data: bytes) -> bytes:
         if data[0] == 0xBE and data[1] == 0xDE and len(data) > 4:
